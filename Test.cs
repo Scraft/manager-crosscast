@@ -13,19 +13,25 @@ namespace Test
 {
     class Program
     {
+        public struct PiAccountTransaction
+        {
+            public Boolean m_IsCashAcount;
+            public String m_AccountName;
+            public Guid? m_Currency;
+            public Decimal m_Amount;
+            public Decimal m_Vat;
+        };
         public struct PiExpense
         {
             public DateTime m_DateTime;
-            public String m_Account;
             public String m_Contact;
             public String m_Description;
-            public Boolean m_IsCashAcount;
             public String m_Category;
-            public Decimal m_Amount;
-            public Decimal m_Vat;
-            public Guid? m_Currency;
             public Decimal m_AmountNativeCurrency;
             public Decimal m_VatNativeCurrency;
+            public PiAccountTransaction m_SourceTransaction;
+            public PiAccountTransaction m_DestinationTransaction;
+            public Boolean m_IsTransfer;
         };
 
         public struct PiExenseCategory
@@ -248,25 +254,14 @@ namespace Test
         {
             List<PiExpense> expenses = new List<PiExpense>( );
 
-            if (description == "Office furniture for new starters")
-            {
-                int a = 5;
-            }
-
             foreach (TransactionLine l in lines)
             {
                 PiExpense e = new PiExpense();
-                e.m_Currency = accountDetails.m_Currency;
+                e.m_SourceTransaction.m_Currency = accountDetails.m_Currency;
 
                 bool valid = false;
 
                 Guid? account = null;
-
-                if (l.Amount == new Decimal(780.0f))
-                {
-                    int a = 5;
-                }
-
                 Guid? taxCode = null;
 
                 if ( !account.HasValue && !taxCode.HasValue && l.PurchaseInvoice.HasValue)
@@ -336,8 +331,8 @@ namespace Test
                         if (accountDetails.m_Valid)
                         {
                             bankAccountName = accountDetails.m_Name;
-                            e.m_Account = accountDetails.m_Name;
-                            e.m_IsCashAcount = accountDetails.m_IsCashAccount;
+                            e.m_SourceTransaction.m_AccountName = accountDetails.m_Name;
+                            e.m_SourceTransaction.m_IsCashAcount = accountDetails.m_IsCashAccount;
                         }
 
                         if (l.TaxCode.HasValue)
@@ -349,15 +344,10 @@ namespace Test
                             e.m_Category = category;
                             e.m_DateTime = date;
 
-                            if (e.m_Category == "Currency conversion")
-                            {
-                                int a = 5;
-                            }
-
-                            WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, l.Amount, negate, objects, nonPersistentObjects, out e.m_Amount, out e.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency);
+                            WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, l.Amount, negate, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency);
 
                             if (category == "Bank charges")
-                                Console.WriteLine(" {0} : {1} : {2} : {3} : {4}", bankAccountName, category, l.Description, contact, e.m_Amount);
+                                Console.WriteLine(" {0} : {1} : {2} : {3} : {4}", bankAccountName, category, l.Description, contact, e.m_SourceTransaction.m_Amount);
 
                             e.m_Contact = contact;
                             e.m_Description = description;
@@ -378,12 +368,8 @@ namespace Test
                             if (c.TaxCode.HasValue)
                                 taxCode = c.TaxCode;
 
-                            WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, l.Amount, true, objects, nonPersistentObjects, out e.m_Amount, out e.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency);
+                            WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, l.Amount, true, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency);
 
-                            if (e.m_Category == null || e.m_Category == "")
-                            {
-                                int a = 5;
-                            }
                             e.m_Contact = contact;
                             e.m_Description = description;
                             expenses.Add(e);
@@ -395,11 +381,7 @@ namespace Test
                     }
                 }
 
-                if (!valid)
-                {
-                    int a = 5;
-                    //Console.WriteLine(" {0} : {1}", l.Description, l.Amount);
-                }
+                Debug.Assert(valid, "Could not process");
             }
 
             return expenses;
@@ -426,25 +408,6 @@ namespace Test
                 }
             }
 
-
-            foreach (Transfer e in objects.Values.OfType<Transfer>())
-            {
-                BankAccount creditAccount = objects[e.CreditAccount.Value] as BankAccount;
-                BankAccount debitAccount = objects[e.DebitAccount.Value] as BankAccount;
-                if (debitAccount != null )
-                {
-                    Console.WriteLine("{0} {1} => {2}", e.Amount, creditAccount.Name, debitAccount.Name);
-                }
-                else
-                {
-                    CashAccount cashAccount = objects[e.DebitAccount.Value] as CashAccount;
-                    if (cashAccount != null)
-                    {
-                        Console.WriteLine("{0} {1} => {2}", e.Amount, creditAccount.Name, cashAccount.Name);
-                    }
-                }
-            }
-
             foreach (Transaction t in objects.Values.OfType<Transaction>())
             {
                 Console.WriteLine("{0} : {1} : {2} : {3} : {4} : {5} : {6} : {7} : {8} ", t.Date.ToString(), t.Reference, t.Description, t.Contact, t.AccountAmount, t.BaseAmount, t.BaseTaxAmount, t.CurrencyConversion, t.TransactionAmount);
@@ -455,6 +418,53 @@ namespace Test
 
             List<PiExpense> expenses = new List<PiExpense>();
             Dictionary<String, PiExenseCategory> expenseCategories = new Dictionary<String, PiExenseCategory>();
+
+
+            foreach (Transfer t in objects.Values.OfType<Transfer>())
+            {
+                if (t.Date < startDate || t.Date > endDate)
+                {
+                    continue;
+                }
+
+                AccountDetails creditAccountDetails = GetAccountDetails(t.CreditAccount.Value, objects);
+                AccountDetails debitAccountDetails = GetAccountDetails(t.DebitAccount.Value, objects);
+
+                BankAccount creditAccount = objects[t.CreditAccount.Value] as BankAccount;
+                BankAccount debitAccount = objects[t.DebitAccount.Value] as BankAccount;
+                if (debitAccount != null)
+                {
+                    Console.WriteLine("{0} {1} => {2}", t.Amount, creditAccount.Name, debitAccount.Name);
+                }
+                else
+                {
+                    CashAccount cashAccount = objects[t.DebitAccount.Value] as CashAccount;
+                    if (cashAccount != null)
+                    {
+                        Console.WriteLine("{0} {1} => {2}", t.Amount, creditAccount.Name, cashAccount.Name);
+                    }
+                }
+
+                PiExpense e;
+                e.m_DateTime = t.Date;
+                e.m_Contact = "Transfer";
+                e.m_Description = t.Description;
+                e.m_Category = "Transfer";
+
+                e.m_SourceTransaction.m_IsCashAcount = creditAccountDetails.m_IsCashAccount;
+                e.m_SourceTransaction.m_AccountName = creditAccountDetails.m_Name;
+                e.m_SourceTransaction.m_Currency = creditAccountDetails.m_Currency;
+                WorkOutAmountAndVat(null, t.CreditAccount, GetBaseCurrency(objects), t.Date, t.Amount, true, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency);
+
+                e.m_DestinationTransaction.m_IsCashAcount = debitAccountDetails.m_IsCashAccount;
+                e.m_DestinationTransaction.m_AccountName = debitAccountDetails.m_Name;
+                e.m_DestinationTransaction.m_Currency = debitAccountDetails.m_Currency;
+                WorkOutAmountAndVat(null, t.CreditAccount, GetBaseCurrency(objects), t.Date, t.Amount, false, objects, nonPersistentObjects, out e.m_DestinationTransaction.m_Amount, out e.m_DestinationTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency);
+
+                e.m_IsTransfer = true;
+
+                expenses.Add(e);
+            }
 
             foreach (Receipt r in objects.Values.OfType<Receipt>())
             {
@@ -491,7 +501,7 @@ namespace Test
                 PiExenseCategory cat;
                 if (expenseCategories.TryGetValue(expense.m_Category, out cat))
                 {
-                    cat.m_Amount += expense.m_Amount;
+                    cat.m_Amount += expense.m_SourceTransaction.m_Amount;
                     expenseCategories[expense.m_Category] = cat;
                 }
             }
@@ -500,7 +510,7 @@ namespace Test
             expenses.Sort((x, y) => x.m_DateTime.CompareTo(y.m_DateTime));
 
             // Get list of unique bank money accounts.
-            List<String> accountTypes = expenses.Select(o => o.m_Account).Distinct().ToList( );
+            List<String> accountTypes = expenses.Select(o => o.m_SourceTransaction.m_AccountName).Distinct().ToList();
 
             // Sort account types alphabetically.
             accountTypes.Sort();
@@ -530,21 +540,30 @@ namespace Test
 
             foreach (PiExpense e in expenses)
             {
-                Decimal gross = e.m_Amount + e.m_Vat;
+                Decimal sourceGross = e.m_SourceTransaction.m_Amount + e.m_SourceTransaction.m_Vat;
+                Decimal destinationGross = e.m_DestinationTransaction.m_Amount + e.m_DestinationTransaction.m_Vat;
                 Decimal grossNative = e.m_AmountNativeCurrency + e.m_VatNativeCurrency;
+                Decimal nativeAmount = e.m_AmountNativeCurrency;
+                if (e.m_IsTransfer)
+                {
+                    grossNative = new Decimal(0);
+                    nativeAmount = new Decimal(0);
+                }
                 newLine = string.Format("{0}\t{1}\t{2}\t{3}", e.m_DateTime.ToShortDateString(), e.m_Contact, e.m_Description, grossNative);
                 foreach (String accountType in accountTypes)
                 {
                     newLine += "\t";
-                    if (accountType == e.m_Account)
-                        newLine += gross;
+                    if (accountType == e.m_SourceTransaction.m_AccountName)
+                        newLine += sourceGross;
+                    if (accountType == e.m_DestinationTransaction.m_AccountName)
+                        newLine += destinationGross;
                 }
-                newLine += string.Format("\t{0}\t{1}", e.m_VatNativeCurrency != new Decimal(0) ? e.m_VatNativeCurrency.ToString() : "", e.m_AmountNativeCurrency);
+                newLine += string.Format("\t{0}\t{1}", e.m_VatNativeCurrency != new Decimal(0) ? e.m_VatNativeCurrency.ToString() : "", nativeAmount);
                 foreach (String category in categories)
                 {
                     newLine += "\t";
                     if (category == e.m_Category)
-                        newLine += e.m_AmountNativeCurrency;
+                        newLine += nativeAmount;
                 }
                 newLine += string.Format("\t{0}", Environment.NewLine);
                 csv.Append(newLine);
