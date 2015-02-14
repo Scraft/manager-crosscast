@@ -13,6 +13,8 @@ namespace Test
 {
     class Program
     {
+        static String kCurrencyGainsLosses = "Currency gains/losses";
+
         public struct PiAccountTransaction
         {
             public Boolean m_IsCashAcount;
@@ -29,6 +31,8 @@ namespace Test
             public String m_Category;
             public Decimal m_AmountNativeCurrency;
             public Decimal m_VatNativeCurrency;
+            public Decimal m_AmountNativeCurrencyAtInvoiceDate;
+            public Decimal m_VatNativeCurrencyAtInvoiceDate;
             public PiAccountTransaction m_SourceTransaction;
             public PiAccountTransaction m_DestinationTransaction;
             public Boolean m_IsTransfer;
@@ -37,6 +41,14 @@ namespace Test
         public struct PiExenseCategory
         {
             public Decimal m_Amount;
+        }
+
+        static void Swap<T>(ref T lhs, ref T rhs)
+        {
+            T temp;
+            temp = lhs;
+            lhs = rhs;
+            rhs = temp;
         }
 
         static Decimal GetExchangeRateFromCurrency(PersistentObjects objects, Guid? bankCurrency, Guid? transactionCurrency, DateTime time)
@@ -54,6 +66,14 @@ namespace Test
 
             Dictionary<DateTime, Decimal> currencyRates = new Dictionary<DateTime, Decimal>();
 
+            Debug.Assert(bankCurrency == baseCurrency || transactionCurrency == baseCurrency, "One of the currencies must be the base currency");
+            Boolean swapped = false;
+            if (bankCurrency == baseCurrency)
+            {
+                Swap(ref bankCurrency, ref transactionCurrency);
+                swapped = true;
+            }
+
             foreach (ExchangeRates rates in objects.Values.OfType<ExchangeRates>())
             {
                 foreach (ExchangeRates.ExchangeRate rate in rates.Rates)
@@ -67,7 +87,12 @@ namespace Test
 
             DateTime result = currencyRates.Keys.Where(x => x <= time).Max();
 
-            return currencyRates[result];
+            Decimal resultRate = currencyRates[result];
+
+            if (swapped)
+                resultRate = new Decimal(1.0f) / resultRate;
+
+            return resultRate;
         }
 
         static Decimal GetExchangeRateFromAccountId(PersistentObjects objects, Guid? bankAccountId, Guid? transactionCurrency, DateTime time)
@@ -145,7 +170,7 @@ namespace Test
             return baseCurrency[0].Currency;
         }
 
-        static void WorkOutAmountAndVat(Guid? taxCode, Guid? accountId, Guid? currencyId, DateTime date, Decimal nativeAmount, Boolean negate, PersistentObjects objects, Objects nonPersistentObjects, out Decimal amount, out Decimal vat, out Decimal amountNativeCurrency, out Decimal vatNativeCurrency)
+        static void WorkOutAmountAndVat(Guid? taxCode, Guid? accountId, Guid? currencyId, DateTime date, DateTime invoiceDate, Guid? invoiceCurrency, Decimal nativeAmount, Boolean negate, PersistentObjects objects, Objects nonPersistentObjects, out Decimal amount, out Decimal vat, out Decimal amountNativeCurrency, out Decimal vatNativeCurrency, out Decimal amountNativeCurrencyAtInvoiceDate, out Decimal vatNativeCurrencyAtInvoiceDate)
         {
             Decimal taxRate = new Decimal(100.0f);
 
@@ -186,12 +211,41 @@ namespace Test
                 vatNativeCurrency = RoundTowardZero(vatNativeCurrency, 2);
             }
 
+            // And the amount in native currency on invoice date.
+            // Note, if a US invoice is raised, and then paid into a UK bank account, we need to work out how much the GBP
+            // money received would have been worth at invoice date.
+            {
+                // Get amount in invoice currency.
+                {
+                    Decimal newExchangeRate = GetExchangeRateFromCurrency(objects, currencyId, invoiceCurrency, date);
+                    Decimal test = nativeAmount / newExchangeRate;
+                    Decimal oldExchangeRate = GetExchangeRateFromCurrency(objects, currencyId, invoiceCurrency, invoiceDate);
+                    test = test * oldExchangeRate;
+
+                    nativeAmount = RoundTowardZero(test, 2);
+                    int a = 5;
+                }
+
+                {
+                    Guid? baseCurrency = GetBaseCurrency(objects);
+
+                    Decimal exchangeRate = GetExchangeRateFromCurrency(objects, currencyId, baseCurrency, invoiceDate);
+                    amountNativeCurrencyAtInvoiceDate = (nativeAmount / taxRate) / exchangeRate;
+                    amountNativeCurrencyAtInvoiceDate = RoundTowardZero(amountNativeCurrencyAtInvoiceDate, 2);
+
+                    vatNativeCurrencyAtInvoiceDate = (nativeAmount / exchangeRate) - amountNativeCurrencyAtInvoiceDate;
+                    vatNativeCurrencyAtInvoiceDate = RoundTowardZero(vatNativeCurrencyAtInvoiceDate, 2);
+                }
+            }
+
             if (negate)
             {
                 amount = amount * -1;
                 vat = vat * -1;
                 amountNativeCurrency = amountNativeCurrency * -1;
                 vatNativeCurrency = vatNativeCurrency * -1;
+                amountNativeCurrencyAtInvoiceDate = amountNativeCurrencyAtInvoiceDate * -1;
+                vatNativeCurrencyAtInvoiceDate = vatNativeCurrencyAtInvoiceDate * -1;
             }
         }
 
@@ -254,8 +308,21 @@ namespace Test
         {
             List<PiExpense> expenses = new List<PiExpense>( );
 
+            if (description == "Tofu Hunter MS05")
+            {
+                int a = 5;
+            }
+
+            if (description == "Currency conversion")
+            {
+                int a = 5;
+            }
+
             foreach (TransactionLine l in lines)
             {
+                DateTime invoiceDate = date;
+                Guid? invoiceCurrency = GetBaseCurrency(objects);
+
                 PiExpense e = new PiExpense();
                 e.m_SourceTransaction.m_Currency = accountDetails.m_Currency;
 
@@ -270,6 +337,7 @@ namespace Test
                     Debug.Assert(invoice.Lines.Count() == 1, "Too many lines");
                     account = invoice.Lines[0].Account;
                     taxCode = invoice.Lines[0].TaxCode;
+                    invoiceDate = invoice.IssueDate;
                 }
 
                 if (!account.HasValue && !taxCode.HasValue && l.SalesInvoice.HasValue)
@@ -280,6 +348,14 @@ namespace Test
                         Debug.Assert(invoice.Lines.Count() >= 1, "Not enough lines");
                         account = invoice.Lines[0].Account;
                         taxCode = invoice.Lines[0].TaxCode;
+                        invoiceDate = invoice.IssueDate;
+
+                        if (invoice.To.HasValue)
+                        {
+                            Customer customer = objects[invoice.To.Value] as Customer;
+                            invoiceCurrency = customer.Currency;
+                        }
+
                         foreach (TransactionLine line in invoice.Lines)
                         {
                             Debug.Assert(line.Account == account, "Sales invoice with more than one category");
@@ -344,7 +420,7 @@ namespace Test
                             e.m_Category = category;
                             e.m_DateTime = date;
 
-                            WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, l.Amount, negate, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency);
+                            WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, invoiceDate, invoiceCurrency, l.Amount, negate, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency, out e.m_AmountNativeCurrencyAtInvoiceDate, out e.m_VatNativeCurrencyAtInvoiceDate);
 
                             if (category == "Bank charges")
                                 Console.WriteLine(" {0} : {1} : {2} : {3} : {4}", bankAccountName, category, l.Description, contact, e.m_SourceTransaction.m_Amount);
@@ -368,7 +444,7 @@ namespace Test
                             if (c.TaxCode.HasValue)
                                 taxCode = c.TaxCode;
 
-                            WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, l.Amount, true, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency);
+                            WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, invoiceDate, invoiceCurrency, l.Amount, true, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency, out e.m_AmountNativeCurrencyAtInvoiceDate, out e.m_VatNativeCurrencyAtInvoiceDate);
 
                             e.m_Contact = contact;
                             e.m_Description = description;
@@ -454,16 +530,36 @@ namespace Test
                 e.m_SourceTransaction.m_IsCashAcount = creditAccountDetails.m_IsCashAccount;
                 e.m_SourceTransaction.m_AccountName = creditAccountDetails.m_Name;
                 e.m_SourceTransaction.m_Currency = creditAccountDetails.m_Currency;
-                WorkOutAmountAndVat(null, t.CreditAccount, GetBaseCurrency(objects), t.Date, t.Amount, true, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency);
+                WorkOutAmountAndVat(null, t.CreditAccount, GetBaseCurrency(objects), t.Date, t.Date, GetBaseCurrency(objects), t.Amount, true, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency, out e.m_AmountNativeCurrencyAtInvoiceDate, out e.m_VatNativeCurrencyAtInvoiceDate);
 
                 e.m_DestinationTransaction.m_IsCashAcount = debitAccountDetails.m_IsCashAccount;
                 e.m_DestinationTransaction.m_AccountName = debitAccountDetails.m_Name;
                 e.m_DestinationTransaction.m_Currency = debitAccountDetails.m_Currency;
-                WorkOutAmountAndVat(null, t.CreditAccount, GetBaseCurrency(objects), t.Date, t.Amount, false, objects, nonPersistentObjects, out e.m_DestinationTransaction.m_Amount, out e.m_DestinationTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency);
+                WorkOutAmountAndVat(null, t.CreditAccount, GetBaseCurrency(objects), t.Date, t.Date, GetBaseCurrency(objects), t.Amount, false, objects, nonPersistentObjects, out e.m_DestinationTransaction.m_Amount, out e.m_DestinationTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency, out e.m_AmountNativeCurrencyAtInvoiceDate, out e.m_VatNativeCurrencyAtInvoiceDate);
 
                 e.m_IsTransfer = true;
 
                 expenses.Add(e);
+            }
+
+            if (false)
+            {
+                foreach (JournalEntry j in objects.Values.OfType<JournalEntry>())
+                {
+                    if (j.Date < startDate || j.Date > endDate)
+                    {
+                        continue;
+                    }
+
+                    Console.WriteLine(j.Narration);
+                    foreach (TransactionLine l in j.Lines)
+                    {
+                        Console.WriteLine(" {0} : {1}", l.Description, l.Amount);
+                    }
+
+                    AccountDetails accountDetails = new AccountDetails();
+                    expenses.AddRange(ProcessTransactionLines(j.Lines, accountDetails, j.Date, j.Narration, j.Notes, false, objects, nonPersistentObjects));
+                }
             }
 
             foreach (Receipt r in objects.Values.OfType<Receipt>())
@@ -518,6 +614,12 @@ namespace Test
             // Get list of unique categories.
             List<String> categories = expenses.Select(o => o.m_Category).Distinct().ToList();
 
+            // Also want a category for currency gains/losses (if any native currencies do not match native currency at invoice date).
+            if (expenses.Select(o => o.m_AmountNativeCurrency != o.m_AmountNativeCurrencyAtInvoiceDate).Contains(true))
+            {
+                categories.Add(kCurrencyGainsLosses);
+            }
+
             // Sort category types alphabetically.
             categories.Sort( );
 
@@ -544,10 +646,14 @@ namespace Test
                 Decimal destinationGross = e.m_DestinationTransaction.m_Amount + e.m_DestinationTransaction.m_Vat;
                 Decimal grossNative = e.m_AmountNativeCurrency + e.m_VatNativeCurrency;
                 Decimal nativeAmount = e.m_AmountNativeCurrency;
+                Decimal nativeAmountAtInvoiceDate = e.m_AmountNativeCurrencyAtInvoiceDate;
+                Decimal nativeCurrencyGain = e.m_AmountNativeCurrency - e.m_AmountNativeCurrencyAtInvoiceDate;
+
                 if (e.m_IsTransfer)
                 {
                     grossNative = new Decimal(0);
                     nativeAmount = new Decimal(0);
+                    nativeAmountAtInvoiceDate = new Decimal(0);
                 }
                 newLine = string.Format("{0}\t{1}\t{2}\t{3}", e.m_DateTime.ToShortDateString(), e.m_Contact, e.m_Description, grossNative);
                 foreach (String accountType in accountTypes)
@@ -563,7 +669,9 @@ namespace Test
                 {
                     newLine += "\t";
                     if (category == e.m_Category)
-                        newLine += nativeAmount;
+                        newLine += nativeAmountAtInvoiceDate;
+                    if (category == kCurrencyGainsLosses && nativeCurrencyGain != new Decimal(0))
+                        newLine += nativeCurrencyGain;
                 }
                 newLine += string.Format("\t{0}", Environment.NewLine);
                 csv.Append(newLine);
