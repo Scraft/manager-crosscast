@@ -420,7 +420,20 @@ namespace Test
                             e.m_Category = category;
                             e.m_DateTime = date;
 
-                            WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, invoiceDate, invoiceCurrency, l.Amount, negate, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency, out e.m_AmountNativeCurrencyAtInvoiceDate, out e.m_VatNativeCurrencyAtInvoiceDate);
+                            if (!accountDetails.m_Account.HasValue)
+                            {
+                                // Journal entry or something else that doesn't change any bank/cash accounts. Assume it is always native currency with no VAT.
+                                e.m_SourceTransaction.m_Amount = 0;
+                                e.m_SourceTransaction.m_Vat = 0;
+                                e.m_AmountNativeCurrency = (l.Credit.HasValue ? l.Credit.Value : 0) - (l.Debit.HasValue ? l.Debit.Value : 0);
+                                e.m_VatNativeCurrency = 0;
+                                e.m_AmountNativeCurrencyAtInvoiceDate = e.m_AmountNativeCurrency;
+                                e.m_VatNativeCurrencyAtInvoiceDate = 0;
+                            }
+                            else
+                            {
+                                WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, invoiceDate, invoiceCurrency, l.Amount, negate, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency, out e.m_AmountNativeCurrencyAtInvoiceDate, out e.m_VatNativeCurrencyAtInvoiceDate);
+                            }
 
                             if (category == "Bank charges")
                                 Console.WriteLine(" {0} : {1} : {2} : {3} : {4}", bankAccountName, category, l.Description, contact, e.m_SourceTransaction.m_Amount);
@@ -542,7 +555,7 @@ namespace Test
                 expenses.Add(e);
             }
 
-            if (false)
+            if (true)
             {
                 foreach (JournalEntry j in objects.Values.OfType<JournalEntry>())
                 {
@@ -558,7 +571,7 @@ namespace Test
                     }
 
                     AccountDetails accountDetails = new AccountDetails();
-                    expenses.AddRange(ProcessTransactionLines(j.Lines, accountDetails, j.Date, j.Narration, j.Notes, false, objects, nonPersistentObjects));
+                    expenses.AddRange(ProcessTransactionLines(j.Lines, accountDetails, j.Date, "Journal entry", j.Narration, false, objects, nonPersistentObjects));
                 }
             }
 
