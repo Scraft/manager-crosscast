@@ -308,7 +308,7 @@ namespace Test
         {
             List<PiExpense> expenses = new List<PiExpense>( );
 
-            if (description == "Tofu Hunter MS05")
+            if (description == "Tofu Hunter MS06 and Super Battle Run MS01")
             {
                 int a = 5;
             }
@@ -396,6 +396,12 @@ namespace Test
                         category += "/";
                         category += employee.Name;
                     }
+                    if (l.FixedAsset.HasValue)
+                    {
+                        FixedAsset fixedAsset = objects[l.FixedAsset.Value] as FixedAsset;
+                        category += "/";
+                        category += fixedAsset.Name;
+                    }
                 }
 
                 if (account.HasValue)
@@ -482,10 +488,10 @@ namespace Test
             //var dicts = new PersistentDictionary("C:\\Projects\\Manager\\ManagerExporter\\bin\\shared\\Paw Print Games Ltd.manager");
             var objects = new PersistentObjects("C:\\Projects\\Manager-CrossCast\\bin\\shared\\Paw Print Games Ltd.manager");
             var nonPersistentObjects = new Objects("C:\\Projects\\Manager-CrossCast\\bin\\shared\\Objects");
-            foreach (Guid g in objects.Keys)
-            {
-                nonPersistentObjects.Put(g, objects[g]);
-            }
+            //foreach (Guid g in objects.Keys)
+            //{
+            //    nonPersistentObjects.Put(g, objects[g]);
+            //}
 
             
             foreach (JournalEntry j in objects.Values.OfType<JournalEntry>())
@@ -619,7 +625,7 @@ namespace Test
             expenses.Sort((x, y) => x.m_DateTime.CompareTo(y.m_DateTime));
 
             // Get list of unique bank money accounts.
-            List<String> accountTypes = expenses.Select(o => o.m_SourceTransaction.m_AccountName).Distinct().ToList();
+            List<String> accountTypes = expenses.Select(o => o.m_SourceTransaction.m_AccountName).Distinct().Except(new List<String> {null}).ToList();
 
             // Sort account types alphabetically.
             accountTypes.Sort();
