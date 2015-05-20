@@ -25,6 +25,7 @@ namespace Test
         };
         public struct PiExpense
         {
+            public Boolean m_InRequestedPeriod;
             public DateTime m_DateTime;
             public String m_Contact;
             public String m_Description;
@@ -170,6 +171,11 @@ namespace Test
             return baseCurrency[0].Currency;
         }
 
+        static Decimal WorkOutAmountInBaseCurrency(Guid? currencyId, DateTime date, Decimal amount, PersistentObjects objects)
+        {
+            return amount * GetExchangeRateFromCurrency(objects, GetBaseCurrency(objects), currencyId, date);
+        }
+
         static void WorkOutAmountAndVat(Guid? taxCode, Guid? accountId, Guid? currencyId, DateTime date, DateTime invoiceDate, Guid? invoiceCurrency, Decimal nativeAmount, Boolean negate, PersistentObjects objects, Objects nonPersistentObjects, out Decimal amount, out Decimal vat, out Decimal amountNativeCurrency, out Decimal vatNativeCurrency, out Decimal amountNativeCurrencyAtInvoiceDate, out Decimal vatNativeCurrencyAtInvoiceDate)
         {
             Decimal taxRate = new Decimal(100.0f);
@@ -223,7 +229,6 @@ namespace Test
                     test = test * oldExchangeRate;
 
                     nativeAmount = RoundTowardZero(test, 2);
-                    int a = 5;
                 }
 
                 {
@@ -287,6 +292,12 @@ namespace Test
 
         static String GetCategoryFromAccountId(Guid? accountId, out Boolean isFromChartOfAccounts, Manager.PersistentObjects objects)
         {
+            if (!accountId.HasValue)
+            {
+                isFromChartOfAccounts = false;
+                return null;
+            }
+
             isFromChartOfAccounts = false;
 
             try
@@ -304,19 +315,9 @@ namespace Test
             return GetCategoryFromChartOfAccounts(accountId, out isFromChartOfAccounts);
         }
 
-        static List<PiExpense> ProcessTransactionLines(Manager.Model.TransactionLine[] lines, AccountDetails accountDetails, DateTime date, String contact, String description, Boolean negate, Manager.PersistentObjects objects, Manager.Objects nonPersistentObjects)
+        static List<PiExpense> ProcessTransactionLines(Manager.Model.TransactionLine[] lines, AccountDetails accountDetails, DateTime date, DateTime startDate, DateTime endDate, String contact, String description, Boolean negate, Manager.PersistentObjects objects, Manager.Objects nonPersistentObjects)
         {
             List<PiExpense> expenses = new List<PiExpense>( );
-
-            if (description == "Tofu Hunter MS06 and Super Battle Run MS01")
-            {
-                int a = 5;
-            }
-
-            if (description == "Currency conversion")
-            {
-                int a = 5;
-            }
 
             foreach (TransactionLine l in lines)
             {
@@ -324,6 +325,7 @@ namespace Test
                 Guid? invoiceCurrency = GetBaseCurrency(objects);
 
                 PiExpense e = new PiExpense();
+                e.m_InRequestedPeriod = date >= startDate && date <= endDate;
                 e.m_SourceTransaction.m_Currency = accountDetails.m_Currency;
 
                 bool valid = false;
@@ -441,9 +443,6 @@ namespace Test
                                 WorkOutAmountAndVat(taxCode, accountDetails.m_Account, accountDetails.m_Currency, date, invoiceDate, invoiceCurrency, l.Amount, negate, objects, nonPersistentObjects, out e.m_SourceTransaction.m_Amount, out e.m_SourceTransaction.m_Vat, out e.m_AmountNativeCurrency, out e.m_VatNativeCurrency, out e.m_AmountNativeCurrencyAtInvoiceDate, out e.m_VatNativeCurrencyAtInvoiceDate);
                             }
 
-                            if (category == "Bank charges")
-                                Console.WriteLine(" {0} : {1} : {2} : {3} : {4}", bankAccountName, category, l.Description, contact, e.m_SourceTransaction.m_Amount);
-
                             e.m_Contact = contact;
                             e.m_Description = description;
                             expenses.Add(e);
@@ -456,7 +455,7 @@ namespace Test
                             e.m_Category = c.Name;
                             if (e.m_Category == "")
                             {
-                                e.m_Category = GetCategoryFromAccountId(account.Value, out isFromChartOfAccounts, objects);  
+                                e.m_Category = GetCategoryFromAccountId(account.Value, out isFromChartOfAccounts, objects);
                             }                            
                             e.m_DateTime = date;
 
@@ -476,7 +475,8 @@ namespace Test
                     }
                 }
 
-                Debug.Assert(valid, "Could not process");
+                // Any transactions not yet categorised will appear here.
+                //Debug.Assert(valid, "Could not process");
             }
 
             return expenses;
@@ -487,25 +487,15 @@ namespace Test
             // Open or create a file
             //var dicts = new PersistentDictionary("C:\\Projects\\Manager\\ManagerExporter\\bin\\shared\\Paw Print Games Ltd.manager");
             var objects = new PersistentObjects("C:\\Projects\\Manager-CrossCast\\bin\\shared\\Paw Print Games Ltd.manager");
-            var nonPersistentObjects = new Objects("C:\\Projects\\Manager-CrossCast\\bin\\shared\\Objects");
-            //foreach (Guid g in objects.Keys)
-            //{
-            //    nonPersistentObjects.Put(g, objects[g]);
-            //}
-
-            
-            foreach (JournalEntry j in objects.Values.OfType<JournalEntry>())
+            String nonPersistentObjectPath = "C:\\Projects\\Manager-CrossCast\\bin\\shared\\Objects";
+            if (System.IO.Directory.Exists(nonPersistentObjectPath))
             {
-                Console.WriteLine(j.Narration);
-                foreach (TransactionLine l in j.Lines)
-                {
-                    Console.WriteLine(" {0} : {1}", l.Description, l.Amount);
-                }
+                System.IO.Directory.Delete(nonPersistentObjectPath, true);
             }
-
-            foreach (Transaction t in objects.Values.OfType<Transaction>())
+            var nonPersistentObjects = new Objects(nonPersistentObjectPath);
+            foreach (Guid g in objects.Keys)
             {
-                Console.WriteLine("{0} : {1} : {2} : {3} : {4} : {5} : {6} : {7} : {8} ", t.Date.ToString(), t.Reference, t.Description, t.Contact, t.AccountAmount, t.BaseAmount, t.BaseTaxAmount, t.CurrencyConversion, t.TransactionAmount);
+                nonPersistentObjects.Put(g, objects[g]);
             }
 
             DateTime startDate = new DateTime(2014, 1, 7);
@@ -517,30 +507,14 @@ namespace Test
 
             foreach (Transfer t in objects.Values.OfType<Transfer>())
             {
-                if (t.Date < startDate || t.Date > endDate)
-                {
-                    continue;
-                }
-
                 AccountDetails creditAccountDetails = GetAccountDetails(t.CreditAccount.Value, objects);
                 AccountDetails debitAccountDetails = GetAccountDetails(t.DebitAccount.Value, objects);
 
                 BankAccount creditAccount = objects[t.CreditAccount.Value] as BankAccount;
                 BankAccount debitAccount = objects[t.DebitAccount.Value] as BankAccount;
-                if (debitAccount != null)
-                {
-                    Console.WriteLine("{0} {1} => {2}", t.Amount, creditAccount.Name, debitAccount.Name);
-                }
-                else
-                {
-                    CashAccount cashAccount = objects[t.DebitAccount.Value] as CashAccount;
-                    if (cashAccount != null)
-                    {
-                        Console.WriteLine("{0} {1} => {2}", t.Amount, creditAccount.Name, cashAccount.Name);
-                    }
-                }
 
                 PiExpense e;
+                e.m_InRequestedPeriod = t.Date >= startDate && t.Date <= endDate;
                 e.m_DateTime = t.Date;
                 e.m_Contact = "Transfer";
                 e.m_Description = t.Description;
@@ -565,43 +539,170 @@ namespace Test
             {
                 foreach (JournalEntry j in objects.Values.OfType<JournalEntry>())
                 {
-                    if (j.Date < startDate || j.Date > endDate)
-                    {
-                        continue;
-                    }
-
-                    Console.WriteLine(j.Narration);
-                    foreach (TransactionLine l in j.Lines)
-                    {
-                        Console.WriteLine(" {0} : {1}", l.Description, l.Amount);
-                    }
-
                     AccountDetails accountDetails = new AccountDetails();
-                    expenses.AddRange(ProcessTransactionLines(j.Lines, accountDetails, j.Date, "Journal entry", j.Narration, false, objects, nonPersistentObjects));
+                    expenses.AddRange(ProcessTransactionLines(j.Lines, accountDetails, j.Date, startDate, endDate, "Journal entry", j.Narration, false, objects, nonPersistentObjects));
                 }
             }
 
             foreach (Receipt r in objects.Values.OfType<Receipt>())
             {
-                if (r.Date < startDate || r.Date > endDate)
-                {
-                    continue;
-                }
-
-                //Console.WriteLine("{0}", r.Lines[0].Amount);
-                expenses.AddRange(ProcessTransactionLines(r.Lines, GetAccountDetails(r.DebitAccount, objects), r.Date, r.Payer, r.Description, false, objects, nonPersistentObjects));
+                expenses.AddRange(ProcessTransactionLines(r.Lines, GetAccountDetails(r.DebitAccount, objects), r.Date, startDate, endDate, r.Payer, r.Description, false, objects, nonPersistentObjects));
             }
 
             foreach (Payment p in objects.Values.OfType<Payment>())
             {
-                if (p.Date < startDate || p.Date > endDate)
+                expenses.AddRange(ProcessTransactionLines(p.Lines, GetAccountDetails(p.CreditAccount, objects), p.Date, startDate, endDate, p.Payee, p.Description, true, objects, nonPersistentObjects));
+            }
+
+            // Get bank account opening balances.
+            Dictionary<String, Dictionary<DateTime, Decimal>> bankAccountToBalance = new Dictionary<String, Dictionary<DateTime, Decimal>>();
+
+            foreach (BankAccount b in objects.Values.OfType<BankAccount>())
+            {
+                bankAccountToBalance[b.Name] = new Dictionary<DateTime, Decimal>(); 
+                bankAccountToBalance[b.Name][new DateTime(0)] = b.StartingBalance;
+            }
+
+            // Get cash account opening balances.
+            Dictionary<String, Dictionary<DateTime, Decimal>> cashAccountToBalance = new Dictionary<String, Dictionary<DateTime, Decimal>>();
+
+            foreach (CashAccount c in objects.Values.OfType<CashAccount>())
+            {
+                cashAccountToBalance[c.Name] = new Dictionary<DateTime, Decimal>(); 
+                cashAccountToBalance[c.Name][new DateTime(0)] = c.StartingBalance;
+            }
+
+            // Go through (date sorted) expenses and add to bank balances.
+            List<PiExpense> dateSortedExpenses = expenses;
+            dateSortedExpenses.Sort((x, y) => x.m_DateTime.CompareTo(y.m_DateTime)); 
+            foreach ( PiExpense e in dateSortedExpenses )
+            {
+                if (e.m_IsTransfer)
                 {
-                    continue;
+                    int a = 5;
+                    ++a;
                 }
 
-                //Console.WriteLine("{0} : {1} : {2} : {3}", p.Date.ToString(), p.Payee, p.Reference, p.Description);
-                expenses.AddRange( ProcessTransactionLines(p.Lines, GetAccountDetails(p.CreditAccount, objects), p.Date, p.Payee, p.Description, true, objects, nonPersistentObjects) );
+                if (e.m_SourceTransaction.m_AccountName != null)
+                {
+                    if (e.m_SourceTransaction.m_IsCashAcount)
+                    {
+                        Decimal balance;
+                        if ( cashAccountToBalance[e.m_SourceTransaction.m_AccountName].ContainsKey(e.m_DateTime) )
+                            balance = cashAccountToBalance[e.m_SourceTransaction.m_AccountName][e.m_DateTime];
+                        else
+                            balance = cashAccountToBalance[e.m_SourceTransaction.m_AccountName].Last().Value;
+                        cashAccountToBalance[e.m_SourceTransaction.m_AccountName][e.m_DateTime] = balance + e.m_SourceTransaction.m_Amount;
+                    }
+                    else
+                    {
+                        Decimal balance;
+                        if (bankAccountToBalance[e.m_SourceTransaction.m_AccountName].ContainsKey(e.m_DateTime))
+                            balance = bankAccountToBalance[e.m_SourceTransaction.m_AccountName][e.m_DateTime];
+                        else
+                            balance = bankAccountToBalance[e.m_SourceTransaction.m_AccountName].Last().Value;
+                        bankAccountToBalance[e.m_SourceTransaction.m_AccountName][e.m_DateTime] = balance + e.m_SourceTransaction.m_Amount;
+                    }
+                }
+
+                if (e.m_DestinationTransaction.m_AccountName != null)
+                {
+                    if (e.m_DestinationTransaction.m_IsCashAcount)
+                    {
+                        Decimal balance;
+                        if (cashAccountToBalance[e.m_DestinationTransaction.m_AccountName].ContainsKey(e.m_DateTime))
+                            balance = cashAccountToBalance[e.m_DestinationTransaction.m_AccountName][e.m_DateTime];
+                        else
+                            balance = cashAccountToBalance[e.m_DestinationTransaction.m_AccountName].Last().Value;
+                        cashAccountToBalance[e.m_DestinationTransaction.m_AccountName][e.m_DateTime] = balance + e.m_DestinationTransaction.m_Amount;
+                    }
+                    else
+                    {
+                        Decimal balance;
+                        if (bankAccountToBalance[e.m_DestinationTransaction.m_AccountName].ContainsKey(e.m_DateTime))
+                            balance = bankAccountToBalance[e.m_DestinationTransaction.m_AccountName][e.m_DateTime];
+                        else
+                            balance = bankAccountToBalance[e.m_DestinationTransaction.m_AccountName].Last().Value;
+                        bankAccountToBalance[e.m_DestinationTransaction.m_AccountName][e.m_DateTime] = balance + e.m_DestinationTransaction.m_Amount;
+                    }
+                }
+
             }
+
+            // Currency gains and losses.
+            Guid? baseCurrency = GetBaseCurrency(objects);
+            Dictionary<Guid, DateTime?> currencyGuidToLastExchangeRate = new Dictionary<Guid,DateTime?>();
+            List<ExchangeRates> exchangeRatesDateSorted = objects.Values.OfType<ExchangeRates>().ToList();
+            exchangeRatesDateSorted.Sort((x, y) => x.Date.CompareTo(y.Date));
+            foreach (ExchangeRates rates in exchangeRatesDateSorted )
+            {
+                foreach (ExchangeRates.ExchangeRate rate in rates.Rates)
+                {
+                    if (rate.Currency != baseCurrency.Value)
+                    {
+                        if (!currencyGuidToLastExchangeRate.Keys.Contains(rate.Currency))
+                            currencyGuidToLastExchangeRate[rate.Currency] = rates.Date;
+
+                        List<PiExpense> tempExpenses = new List<PiExpense>();
+
+                        // Go through any accounts (bank/cash) which are in the specified currency, and apply gain/loss.
+                        foreach ( BankAccount b in objects.Values.OfType<BankAccount>())
+                        {
+                            if ( b.Currency == rate.Currency )
+                            {
+                                DateTime? lastExchangeRateDate = currencyGuidToLastExchangeRate[rate.Currency];
+                                PiExpense e = CreateCurrencyGainLossExpense(rates, bankAccountToBalance, b.Name, b.Currency, ref lastExchangeRateDate, objects, startDate, endDate);
+                                currencyGuidToLastExchangeRate[rate.Currency] = lastExchangeRateDate;
+                                tempExpenses.Add(e);
+                            }
+                        }
+                        foreach (CashAccount c in objects.Values.OfType<CashAccount>())
+                        {
+                            if (c.Currency == rate.Currency)
+                            {
+                                DateTime? lastExchangeRateDate = currencyGuidToLastExchangeRate[rate.Currency];
+                                PiExpense e = CreateCurrencyGainLossExpense(rates, cashAccountToBalance, c.Name, c.Currency, ref lastExchangeRateDate, objects, startDate, endDate);
+                                currencyGuidToLastExchangeRate[rate.Currency] = lastExchangeRateDate;
+                                tempExpenses.Add(e);
+                            }
+                        }
+
+                        // We want to combine each days activity into one.
+                        if (tempExpenses.Count > 0)
+                        {
+                            PiExpense expense = tempExpenses[0];
+
+                            bool first = true;
+                            foreach (PiExpense e in tempExpenses)
+                            {
+                                if (first == true)
+                                {
+                                    first = false;
+                                    continue;
+                                }
+                                expense.m_AmountNativeCurrency += e.m_AmountNativeCurrency;
+                                expense.m_AmountNativeCurrencyAtInvoiceDate += e.m_AmountNativeCurrencyAtInvoiceDate;
+                            }
+
+                            if (expense.m_AmountNativeCurrency != expense.m_AmountNativeCurrencyAtInvoiceDate)
+                            {
+                                Decimal oldExchange = GetExchangeRateFromCurrency(objects, GetBaseCurrency(objects), rate.Currency, currencyGuidToLastExchangeRate[rate.Currency].Value);
+                                Decimal newExchange = GetExchangeRateFromCurrency(objects, GetBaseCurrency(objects), rate.Currency, rates.Date);
+                                expense.m_Description = String.Format("Currency rate change ({0} -> {1}) for {2}", RoundTowardZero( oldExchange, 4 ), RoundTowardZero( newExchange, 4 ), RoundTowardZero( expense.m_AmountNativeCurrencyAtInvoiceDate, 2 ) );
+
+                                expense.m_AmountNativeCurrency = RoundTowardZero(expense.m_AmountNativeCurrency, 2);
+                                expense.m_AmountNativeCurrencyAtInvoiceDate = RoundTowardZero(expense.m_AmountNativeCurrencyAtInvoiceDate, 2);
+                                expenses.Add(expense);
+                            }
+                        }
+                    }
+
+                    currencyGuidToLastExchangeRate[rate.Currency] = rates.Date;
+                }
+            }
+
+            // We only want to put expenses within out date range onto the cross cast.
+            expenses = expenses.Where(e => e.m_InRequestedPeriod == true).ToList();
 
             // Build up categories from each expense.
             foreach (PiExpense expense in expenses)
@@ -634,7 +735,7 @@ namespace Test
             List<String> categories = expenses.Select(o => o.m_Category).Distinct().ToList();
 
             // Also want a category for currency gains/losses (if any native currencies do not match native currency at invoice date).
-            if (expenses.Select(o => o.m_AmountNativeCurrency != o.m_AmountNativeCurrencyAtInvoiceDate).Contains(true))
+            if (!categories.Contains(kCurrencyGainsLosses) && expenses.Select(o => o.m_AmountNativeCurrency != o.m_AmountNativeCurrencyAtInvoiceDate).Contains(true))
             {
                 categories.Add(kCurrencyGainsLosses);
             }
@@ -668,6 +769,16 @@ namespace Test
                 Decimal nativeAmountAtInvoiceDate = e.m_AmountNativeCurrencyAtInvoiceDate;
                 Decimal nativeCurrencyGain = e.m_AmountNativeCurrency - e.m_AmountNativeCurrencyAtInvoiceDate;
 
+                // If this is a currency gain, then we don't want to use any numbers except the currency gain value.
+                if (e.m_Category.CompareTo(kCurrencyGainsLosses) == 0)
+                {
+                    sourceGross = 0;
+                    destinationGross = 0;
+                    grossNative = 0;
+                    nativeAmount = 0;
+                    nativeAmountAtInvoiceDate = 0;
+                }
+
                 if (e.m_IsTransfer)
                 {
                     grossNative = new Decimal(0);
@@ -687,16 +798,52 @@ namespace Test
                 foreach (String category in categories)
                 {
                     newLine += "\t";
-                    if (category == e.m_Category)
-                        newLine += nativeAmountAtInvoiceDate;
                     if (category == kCurrencyGainsLosses && nativeCurrencyGain != new Decimal(0))
                         newLine += nativeCurrencyGain;
+                    else if (category == e.m_Category)
+                        newLine += nativeAmountAtInvoiceDate;
                 }
                 newLine += string.Format("\t{0}", Environment.NewLine);
                 csv.Append(newLine);
             }
 
             System.IO.File.WriteAllText("C:\\Projects\\Manager-CrossCast\\bin\\shared\\CrossCast.tsv", csv.ToString());
+        }
+
+        private static PiExpense CreateCurrencyGainLossExpense(ExchangeRates rates, Dictionary<String, Dictionary<DateTime, Decimal>> bankAccountToBalance, String accountName, Guid? accountCurrency, ref DateTime? lastExchangeRateDate, Manager.PersistentObjects objects, DateTime startDate, DateTime endDate)
+        {
+            PiExpense e = new PiExpense();
+            e.m_DateTime = rates.Date;
+            e.m_Contact = kCurrencyGainsLosses;
+            e.m_Description = kCurrencyGainsLosses;
+            e.m_Category = kCurrencyGainsLosses;
+
+            e.m_AmountNativeCurrency = 0;
+            e.m_VatNativeCurrency = 0;
+            e.m_AmountNativeCurrencyAtInvoiceDate = 0;
+            e.m_VatNativeCurrencyAtInvoiceDate = 0;
+
+            // We use one day in the past, as we don't want to include the specified days transactions.
+            DateTime lookUpDate = rates.Date;
+            lookUpDate = lookUpDate.AddDays(-1.0);
+
+            // Get the amount of money in the bank at a given date... somehow!
+            int ix = bankAccountToBalance[accountName].Keys.ToList().BinarySearch(lookUpDate);
+            if (ix < 0)
+                ix = ~ix - 1;
+
+            Decimal foreignCurrencyAmount = bankAccountToBalance[accountName].Values.ToList()[ix];
+            Decimal previousCurrencyAmount = WorkOutAmountInBaseCurrency(accountCurrency, lastExchangeRateDate.Value, foreignCurrencyAmount, objects);
+            Decimal nativeCurrencyAmount = WorkOutAmountInBaseCurrency(accountCurrency, rates.Date, foreignCurrencyAmount, objects);
+            Decimal gainLoss = nativeCurrencyAmount - previousCurrencyAmount;
+
+            e.m_AmountNativeCurrency = nativeCurrencyAmount;
+            e.m_AmountNativeCurrencyAtInvoiceDate = previousCurrencyAmount;
+
+            e.m_InRequestedPeriod = e.m_DateTime >= startDate && e.m_DateTime <= endDate;
+            e.m_IsTransfer = false;
+
+            return e;
         }
     }
 }
